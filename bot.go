@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"fmt"
 	"encoding/json"
@@ -8,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"bytes"
 )
 
 type UpdateT struct {
@@ -50,7 +50,15 @@ type SendMessageResponseT struct {
 	Result UpdateResultMessageT `json:"result"`
 }
 
+type Buddy struct{
+		//present bool //Есть ли данный пользователь в списке активных
+		//has_buddy bool //Есть ли собеседник
+		buddy_id int // ID собеседника. -1 - собеседника нет
+		buddy_chat_id int /* ID чата с ним*/
+	}
+
 const debug  = true
+//const debug = false
 
 const baseTelegramUrl = "https://api.telegram.org"
 const getUpdatesUri = "getUpdates"
@@ -59,13 +67,17 @@ const sendMessageUrl = "sendMessage"
 
 const keywordStart = "/start"
 
+
 func main() {
+	delay := 5
+if debug{delay=1}
 	var offset int = 0
+	activeUsers := map[int]*Buddy{}	 
 	for {
 		// установить счетчик времени, каждые 5 секунд получать обнолвения из telegram и отправлять ответы при совпажении по ключевым словам
 		// сделать от 10 до 20 ключевых слов с разными реакциями и проверять совпадения в цикле (strings.Contains)
 		// сделать боту возможность переписки пар людей (пересылка сообщений между парами, анонимный чат)
-		time.Sleep(5 * time.Second)
+		time.Sleep(time.Duration(delay) * time.Second)
 
 		//offset++
 if debug {fmt.Println(offset)}
@@ -83,16 +95,59 @@ if debug {fmt.Println(offset)}
 			if item.Message.From.IsBot == false {
 				switch{
 				case item.Message.Text == "Привет" :
-					text = "Привет, " + item.Message.From.FirstName + " " + item.Message.From.LastName
+					text = "Бот приветствует тебя, " + item.Message.From.FirstName + " " + item.Message.From.LastName
 				case strings.Contains(item.Message.Text, "Здравствуй"):
 					text = "Здравствуй, " + item.Message.From.FirstName + " " + item.Message.From.LastName
-				case item.Message.Text == "/start" :
-					text = "Этот бот - отличная возможность найти себе анонимного собеседника.\nНапиши /begin чтобы начать"
+				case strings.Contains(item.Message.Text, "надоел"):
+					text = "Подсказка: чтобы закончить общение, воспользуйся командой /end"
+				case strings.Contains(item.Message.Text, "скучно"):
+					text = "Подсказка: чтобы сменить собеседника, воспользуйся последовательностью команд: /end /begin"
+				case item.Message.Text == "пока" || item.Message.Text == "прощай":
+					text = "Подсказка: не забудь воспользоваться командой /end чтобы выйти из чата"
+				case strings.Contains(item.Message.Text, "дурак"):
+					text = "Просим воздержаться от ругани"
 				}
 
+				if activeUsers[item.Message.From.Id] != nil {	// Если пользователь активен
+					if activeUsers[item.Message.From.Id].buddy_id!=-1{ // И если у него есть собеседник
+						sendMessage(activeUsers[item.Message.From.Id].buddy_chat_id, item.Message.Text) // отправим ему текст сообщения
+					}
+				}
+				
 
+				switch{ // Служебные команды бота, сообщения с которыми мы не будем пересылать собеседнику
+				case item.Message.Text == "/start" :
+					text = "Этот бот - отличная возможность найти себе анонимного собеседника.\nНапиши /begin чтобы подобрать себе собеседника и /end для завершения общения\n/count - количество активных пользователей в данный момент"
+				case item.Message.Text == "/begin" :
+					activeUsers[item.Message.From.Id] = &Buddy{-1,0}
+					text = "Отлично. Мы добавили тебя в список активных пользователей"
 
-				sendMessage(item.Message.Chat.Id, text)
+					/*
+					делаем не более, чем len(activeUsers) попыток рандомно выбрать собеседника. Останавливаемся когда:
+					-id не равен id самого человека
+					-buddy_id != -1
+
+					Как только находим собеседника, прописываемся и у него в структуре. а также пишем ему, что он теперь не один. И пишем нашему изначальному собеседнику. 
+					в противном случае пишем, что собеседника пока нет.
+					*/
+				case item.Message.Text == "/end" :
+					if activeUsers[item.Message.From.Id] != nil{
+						buddy_id := activeUsers[item.Message.From.Id].buddy_id
+						if buddy_id != -1 { //Если у пользователя был собеседник
+							sendMessage(activeUsers[item.Message.From.Id].buddy_chat_id, "Твой собеседник покинул чат") // уведомим его о факте отключения
+							activeUsers[buddy_id].buddy_id=-1 // удалим сведения о пользователе в структуре собеседника
+						}
+					}
+					delete (activeUsers, item.Message.From.Id) // и удалим структуру самого пользователя 
+					text = "Мы удалили тебя из списка активных собеседников"
+				case item.Message.Text == "/count" :
+					text = strconv.Itoa(len(activeUsers))
+				}
+
+				if text != "" {
+					sendMessage(item.Message.Chat.Id, text)
+				}
+
 			}
 			offset = item.UpdateId + 1
 		}
@@ -114,19 +169,42 @@ if debug{fmt.Println(string(response))}
 	return update, nil
 }
 
+
 func sendMessage(chatId int, text string) (SendMessageResponseT, error) {
 	url := baseTelegramUrl + "/bot" + telegramToken + "/" + sendMessageUrl
-	url = url + "?chat_id=" + strconv.Itoa(chatId) + "&text=" + text
-	response := getResponse(url)
 
 	sendMessage := SendMessageResponseT{}
-	err := json.Unmarshal(response, &sendMessage)
+
+	tojson := map[string]string{"chat_id": strconv.Itoa(chatId), "text": text}
+	bytesRepresentation, err := json.Marshal(tojson)
 	if err != nil {
 		return sendMessage, err
 	}
+if debug {fmt.Println(string(bytesRepresentation))}
 
+	resp, err :=  http.Post(url, "application/json", bytes.NewBuffer(bytesRepresentation))
+	if err != nil {
+		return sendMessage, err
+	}
+	response := make([]byte, 0)
+	for true {
+		bs := make([]byte, 1024)
+		n, err := resp.Body.Read(bs)
+		response = append(response, bs[:n]...)
+
+		if n == 0 || err != nil{
+			break
+		}
+	}
+
+	err = json.Unmarshal(response, &sendMessage)
+	if err != nil {
+		return sendMessage, err
+	}
+if debug {fmt.Println(string(response))}
 	return sendMessage, nil
 }
+
 
 func getResponse(url string) []byte {
 	response := make([]byte, 0)
