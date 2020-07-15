@@ -55,7 +55,6 @@ type SendMessageResponseT struct {
 type ActiveUserT struct{
 		chat_id int //ID чата
 		buddy_id int // ID собеседника. -1 - собеседника нет
-		buddy_chat_id int /* ID чата с ним*/
 	}
 
 const debug  = true
@@ -73,7 +72,7 @@ func main() {
 	delay := 5
 if debug{delay=1}
 	var offset int = 0
-	activeUsers := map[int]*ActiveUserT{}	 
+	activeUsers := map[int]*ActiveUserT{} 
 	for {
 		// установить счетчик времени, каждые 5 секунд получать обнолвения из telegram и отправлять ответы при совпажении по ключевым словам
 		// сделать от 10 до 20 ключевых слов с разными реакциями и проверять совпадения в цикле (strings.Contains)
@@ -92,6 +91,7 @@ if debug {fmt.Println(offset)}
 
 
 		for _, item := range(update.Result) {
+			from_id := item.Message.From.Id
 			var text string
 			if item.Message.From.IsBot == false {
 				switch{
@@ -109,10 +109,9 @@ if debug {fmt.Println(offset)}
 					text = "Просим воздержаться от ругани"
 				}
 
-				//from_id = item.Message.From.Id
-				if activeUsers[item.Message.From.Id] != nil {	// Если пользователь активен
-					if activeUsers[item.Message.From.Id].buddy_id!=-1{ // И если у него есть собеседник
-						sendMessage(activeUsers[item.Message.From.Id].buddy_chat_id, item.Message.Text) // отправим ему текст сообщения
+				if activeUsers[from_id] != nil {	// Если пользователь активен
+					if activeUsers[from_id].buddy_id!=-1{ // И если у него есть собеседник
+						sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, item.Message.Text) // отправим ему текст сообщения
 					}
 				}
 
@@ -120,7 +119,7 @@ if debug {fmt.Println(offset)}
 				case item.Message.Text == "/start" :
 					text = "Этот бот - отличная возможность найти себе анонимного собеседника.\nНапиши /begin чтобы подобрать себе собеседника и /end для завершения общения\n/count - количество активных пользователей в данный момент"
 				case item.Message.Text == "/begin" :
-					activeUsers[item.Message.From.Id] = &ActiveUserT{buddy_id:-1,buddy_chat_id:0, chat_id:item.Message.Chat.Id}
+					activeUsers[from_id] = &ActiveUserT{buddy_id:-1, chat_id:item.Message.Chat.Id}
 
 					text = "Отлично. Мы добавили тебя в список активных пользователей"
 
@@ -135,17 +134,15 @@ if debug {fmt.Println(offset)}
 
 					breakflag := false
 					for _, v := range(activeUsers_arr){ // ищем собеседника
-						if v != item.Message.From.Id {// главное - не выйти на самого себя
+						if v != from_id {// главное - не выйти на самого себя
 							if activeUsers[v].buddy_id == -1 { // если потенциальный собеседник без пары
-								activeUsers[v].buddy_id = item.Message.From.Id // прописываем себя его парой
-								activeUsers[v].buddy_chat_id = item.Message.Chat.Id // и добавляем ID своего чата
+								activeUsers[v].buddy_id = from_id // прописываем себя его парой
 
-								activeUsers[item.Message.From.Id].buddy_id = v // прописывам собеседника парой себе
-								activeUsers[item.Message.From.Id].buddy_chat_id = activeUsers[v].chat_id // и ID его чата
+								activeUsers[from_id].buddy_id = v // прописывам собеседника парой себе
 
-								sendMessage(activeUsers[item.Message.From.Id].buddy_chat_id, "Собеседник найден!") // уведомляем собеседника
+								sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, "Собеседник найден!") // уведомляем собеседника
 
-								text = text + "\n Теперь у тебя есть собеседник"
+								text = text + "\nТеперь у тебя есть собеседник"
 								breakflag = true
 								break
 							}
@@ -165,14 +162,14 @@ if debug {fmt.Println(offset)}
 					в противном случае пишем, что собеседника пока нет.
 					*/
 				case item.Message.Text == "/end" :
-					if activeUsers[item.Message.From.Id] != nil{
-						buddy_id := activeUsers[item.Message.From.Id].buddy_id
+					if activeUsers[from_id] != nil{
+						buddy_id := activeUsers[from_id].buddy_id
 						if buddy_id != -1 { //Если у пользователя был собеседник
-							sendMessage(activeUsers[item.Message.From.Id].buddy_chat_id, "Твой собеседник покинул чат") // уведомим его о факте отключения
+							sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, "Твой собеседник покинул чат") // уведомим его о факте отключения
 							activeUsers[buddy_id].buddy_id=-1 // удалим сведения о пользователе в структуре собеседника
 						}
 					}
-					delete (activeUsers, item.Message.From.Id) // и удалим структуру самого пользователя 
+					delete (activeUsers, from_id) // и удалим структуру самого пользователя 
 					text = "Мы удалили тебя из списка активных собеседников"
 				case item.Message.Text == "/count" :
 					text = strconv.Itoa(len(activeUsers))
