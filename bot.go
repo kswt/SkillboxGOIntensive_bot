@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 	"bytes"
-
 	"math/rand"
 )
 
@@ -57,8 +56,8 @@ type ActiveUserT struct{
 		buddy_id int // ID собеседника. -1 - собеседника нет
 	}
 
-const debug  = true
-//const debug = false
+//const debug  = true
+const debug = false
 
 const baseTelegramUrl = "https://api.telegram.org"
 const getUpdatesUri = "getUpdates"
@@ -72,6 +71,7 @@ func main() {
 	delay := 5
 if debug{delay=1}
 	var offset int = 0
+	active_chats := 0
 	activeUsers := map[int]*ActiveUserT{} 
 	for {
 		// установить счетчик времени, каждые 5 секунд получать обнолвения из telegram и отправлять ответы при совпажении по ключевым словам
@@ -79,7 +79,6 @@ if debug{delay=1}
 		// сделать боту возможность переписки пар людей (пересылка сообщений между парами, анонимный чат)
 		time.Sleep(time.Duration(delay) * time.Second)
 
-		//offset++
 if debug {fmt.Println(offset)}
 		update, err := getUpdates(offset)
 
@@ -91,9 +90,72 @@ if debug {fmt.Println(offset)}
 
 
 		for _, item := range(update.Result) {
+			offset = item.UpdateId + 1
 			from_id := item.Message.From.Id
 			var text string
+// Чат для живых людей. Сообщения от ботов игнорируются
 			if item.Message.From.IsBot == false {
+				send_to_buddy := true
+				switch{ // Служебные команды бота, сообщения с которыми мы не будем пересылать собеседнику
+				case item.Message.Text == "/start" :
+					text = "Этот бот - отличная возможность найти себе анонимного собеседника.\nНапиши /begin чтобы подобрать себе собеседника и /end для завершения общения\n/users - количество активных пользователей в данный момент\n/chats - количество активных чатов"
+					send_to_buddy = false
+				case item.Message.Text == "/begin" :
+					activeUsers[from_id] = &ActiveUserT{buddy_id:-1, chat_id:item.Message.Chat.Id}
+
+					text = "Отлично. Мы добавили тебя в список активных пользователей"
+
+
+					activeUsers_arr := []int{}
+					for key, _ :=range activeUsers{
+						activeUsers_arr = append(activeUsers_arr, key)
+					}
+if debug {fmt.Println(activeUsers_arr)}
+					rand.Seed(time.Now().UnixNano())
+					rand.Shuffle(len(activeUsers_arr),func(i,j int){
+						activeUsers_arr[i], activeUsers_arr[j] = activeUsers_arr[j], activeUsers_arr[i]})
+// При большом количестве пользователей блок кода выше станет узким местом. В целях оптимизации времени можно разбить пользователей на 2 отдельных объекта map: пользователи с собеседником и без, но до дедлайна я не успею.
+
+
+					breakflag := false
+					for _, v := range(activeUsers_arr){ // ищем собеседника
+						if v != from_id {// главное - не выйти на самого себя
+							if activeUsers[v].buddy_id == -1 { // если потенциальный собеседник без пары
+								activeUsers[v].buddy_id = from_id // прописываем у собеседника себя
+								activeUsers[from_id].buddy_id = v // прописывам у себя собеседника
+
+								sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, "Собеседник найден!") // уведомляем собеседника
+
+								text = text + "\nТеперь у тебя есть собеседник"
+								active_chats++
+								breakflag = true
+								break
+							}
+						}
+					}
+					if breakflag == false {text = text + ", но пока не нашли тебе собеседника. Мы уведомим тебя сразу, как он появится"}
+					send_to_buddy = false
+				case item.Message.Text == "/end" :
+					if activeUsers[from_id] != nil{
+						buddy_id := activeUsers[from_id].buddy_id
+						if buddy_id != -1 { //Если у пользователя был собеседник
+							sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, "Твой собеседник покинул чат. Воспользуйся командой /begin,	чтобы найти нового") // уведомим его о факте отключения
+							activeUsers[buddy_id].buddy_id=-1 // удалим сведения о пользователе в структуре собеседника
+							active_chats--
+						}
+					}
+					delete (activeUsers, from_id) // и удалим структуру самого пользователя 
+					text = "Мы удалили тебя из списка активных собеседников"
+
+					send_to_buddy = false
+				case item.Message.Text == "/users" :
+					text = strconv.Itoa(len(activeUsers))
+					send_to_buddy = false
+				case item.Message.Text == "/chats" :
+					text = strconv.Itoa(active_chats)
+					send_to_buddy = false
+				}
+
 				switch{
 				case item.Message.Text == "Привет" :
 					text = "Бот приветствует тебя, " + item.Message.From.FirstName + " " + item.Message.From.LastName
@@ -109,78 +171,18 @@ if debug {fmt.Println(offset)}
 					text = "Просим воздержаться от ругани"
 				}
 
-				if activeUsers[from_id] != nil {	// Если пользователь активен
-					if activeUsers[from_id].buddy_id!=-1{ // И если у него есть собеседник
+				if  activeUsers[from_id] != nil && send_to_buddy {	// Если пользователь активен и текущее сообщение подлежит пересылке
+					if activeUsers[from_id].buddy_id!=-1{ // И если у пользователя есть собеседник
 						sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, item.Message.Text) // отправим ему текст сообщения
 					}
 				}
 
-				switch{ // Служебные команды бота, сообщения с которыми мы не будем пересылать собеседнику
-				case item.Message.Text == "/start" :
-					text = "Этот бот - отличная возможность найти себе анонимного собеседника.\nНапиши /begin чтобы подобрать себе собеседника и /end для завершения общения\n/count - количество активных пользователей в данный момент"
-				case item.Message.Text == "/begin" :
-					activeUsers[from_id] = &ActiveUserT{buddy_id:-1, chat_id:item.Message.Chat.Id}
-
-					text = "Отлично. Мы добавили тебя в список активных пользователей"
-
-					activeUsers_arr := []int{}
-					for key, _ :=range activeUsers{
-						activeUsers_arr = append(activeUsers_arr, key)
-					}
-
-					rand.Seed(time.Now().UnixNano())
-					rand.Shuffle(len(activeUsers_arr),func(i,j int){
-						activeUsers_arr[i], activeUsers_arr[j] = activeUsers_arr[j], activeUsers_arr[i]})
-
-					breakflag := false
-					for _, v := range(activeUsers_arr){ // ищем собеседника
-						if v != from_id {// главное - не выйти на самого себя
-							if activeUsers[v].buddy_id == -1 { // если потенциальный собеседник без пары
-								activeUsers[v].buddy_id = from_id // прописываем себя его парой
-
-								activeUsers[from_id].buddy_id = v // прописывам собеседника парой себе
-
-								sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, "Собеседник найден!") // уведомляем собеседника
-
-								text = text + "\nТеперь у тебя есть собеседник"
-								breakflag = true
-								break
-							}
-						}
-					}
-					if breakflag == false {text = text + ", но пока не нашли тебе собеседника. Мы уведомим тебя сразу, как он появится"}
-
-
-
-
-					/*
-					делаем не более, чем len(activeUsers) попыток рандомно выбрать собеседника. Останавливаемся когда:
-					-id не равен id самого человека
-					-buddy_id != -1
-
-					Как только находим собеседника, прописываемся и у него в структуре. а также пишем ему, что он теперь не один. И пишем нашему изначальному собеседнику. 
-					в противном случае пишем, что собеседника пока нет.
-					*/
-				case item.Message.Text == "/end" :
-					if activeUsers[from_id] != nil{
-						buddy_id := activeUsers[from_id].buddy_id
-						if buddy_id != -1 { //Если у пользователя был собеседник
-							sendMessage(activeUsers[activeUsers[from_id].buddy_id].chat_id, "Твой собеседник покинул чат") // уведомим его о факте отключения
-							activeUsers[buddy_id].buddy_id=-1 // удалим сведения о пользователе в структуре собеседника
-						}
-					}
-					delete (activeUsers, from_id) // и удалим структуру самого пользователя 
-					text = "Мы удалили тебя из списка активных собеседников"
-				case item.Message.Text == "/count" :
-					text = strconv.Itoa(len(activeUsers))
-				}
 
 				if text != "" {
 					sendMessage(item.Message.Chat.Id, text)
 				}
 
 			}
-			offset = item.UpdateId + 1
 		}
 	}
 }
@@ -211,8 +213,6 @@ func sendMessage(chatId int, text string) (SendMessageResponseT, error) {
 	if err != nil {
 		return sendMessage, err
 	}
-if debug {fmt.Println(string(bytesRepresentation))}
-
 	resp, err :=  http.Post(url, "application/json", bytes.NewBuffer(bytesRepresentation))
 	if err != nil {
 		return sendMessage, err
@@ -232,7 +232,6 @@ if debug {fmt.Println(string(bytesRepresentation))}
 	if err != nil {
 		return sendMessage, err
 	}
-if debug {fmt.Println(string(response))}
 	return sendMessage, nil
 }
 
